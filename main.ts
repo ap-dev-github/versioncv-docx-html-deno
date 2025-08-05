@@ -1,29 +1,39 @@
-// main.ts - Deno Worker with LibreOffice WASM
-import { serve } from "https://deno.land/std@0.192.0/http/server.ts";
+// main.ts
+import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 
-// Configuration
-const WASM_URL = "https://libra-wasm-cdn-production.devversioncv.workers.dev/soffice.mjs";
-const VERSION = "v=12";
+// CDN Configuration
+const CDN_BASE = "https://libra-wasm-cdn-production.devversioncv.workers.dev";
+const VERSION = "v=11";
 
-// Initialize WASM once (cold start)
-const initWASM = async () => {
-  const { default: initLib, Module } = await import(WASM_URL);
-  
-  await initLib({
-    locateFile: (file: string) => `${WASM_URL.replace('soffice.mjs', file)}?${VERSION}`,
-    noInitialRun: true, // Critical for worker environment
-    thisProgram: "soffice", // Required for LibreOffice CLI
-    wasmMemory: new WebAssembly.Memory({ initial: 256 }),
-  });
-
-  return Module;
-};
-
-// Cache initialized WASM
 let wasmModule: any;
 
-Deno.serve(async (req: Request) => {
-  // CORS Handling
+async function initWASM() {
+  try {
+    // Dynamically import from CDN
+    const { default: initLib } = await import(`${CDN_BASE}/soffice.mjs?${VERSION}`);
+    
+    return await initLib({
+      locateFile: (path: string) => `${CDN_BASE}/${path}?${VERSION}`,
+      noInitialRun: true,
+      thisProgram: "soffice",
+      wasmMemory: new WebAssembly.Memory({ initial: 256 }),
+      // Recommended for CDN loading:
+      instantiateWasm: async (imports: WebAssembly.Imports, callback: (instance: WebAssembly.Instance) => void) => {
+        const wasmResponse = await fetch(`${CDN_BASE}/soffice.wasm?${VERSION}`);
+        const wasmBytes = await wasmResponse.arrayBuffer();
+        const instance = await WebAssembly.instantiate(wasmBytes, imports);
+        callback(instance);
+        return instance.exports;
+      }
+    });
+  } catch (error) {
+    console.error("WASM Initialization Failed:", error);
+    throw error;
+  }
+}
+
+async function handleRequest(req: Request): Promise<Response> {
+  // CORS Preflight
   if (req.method === "OPTIONS") {
     return new Response(null, {
       headers: {
@@ -34,24 +44,23 @@ Deno.serve(async (req: Request) => {
     });
   }
 
+  // Only accept POST requests
   if (req.method !== "POST") {
-    return new Response("Send DOCX via POST", { status: 405 });
+    return new Response("Method Not Allowed", { status: 405 });
   }
 
   try {
-    // Initialize WASM (if not cached)
+    // Initialize WASM (cached after first load)
     if (!wasmModule) {
       wasmModule = await initWASM();
-      // Configure virtual filesystem
       wasmModule.FS.mkdir("/working");
-      wasmModule.FS.mount(wasmModule.FS.filesystems.WORKERFS, {}, "/working");
     }
 
-    // Process file
+    // Process document
     const docxData = new Uint8Array(await req.arrayBuffer());
     wasmModule.FS.writeFile("/working/input.docx", docxData);
 
-    // Execute conversion
+    // Convert to HTML
     wasmModule.callMain([
       "--headless",
       "--convert-to", "html",
@@ -72,10 +81,16 @@ Deno.serve(async (req: Request) => {
         "Access-Control-Allow-Origin": "*"
       }
     });
-  } catch (err) {
-    return new Response(`Error: ${err.message}`, { 
+
+  } catch (error) {
+    console.error("Conversion Error:", error);
+    return new Response(`Conversion Failed: ${error.message}`, {
       status: 500,
       headers: { "Access-Control-Allow-Origin": "*" }
     });
   }
-});
+}
+
+// Start Server
+console.log("Server running at http://localhost:8000");
+serve(handleRequest, { port: 8000 });
