@@ -1,7 +1,8 @@
 // Import the LibreOffice WebAssembly runtime from your CDN
 import initLib from "https://libra-wasm-cdn-production.devversioncv.workers.dev/soffice.mjs";
 
-// Deno Edge Function
+const VERSION = `v=2`; // bump this to bust cache
+
 Deno.serve(async (req) => {
   // Handle preflight for CORS
   if (req.method === "OPTIONS") {
@@ -20,20 +21,15 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Get the uploaded DOCX file as Uint8Array
     const docxBuffer = new Uint8Array(await req.arrayBuffer());
 
-    // Load the LibreOffice WebAssembly runtime from your CDN
-  const Module = await initLib({
-  locateFile: (file) =>
-    `https://libra-wasm-cdn-production.devversioncv.workers.dev/${file}`,
-  ENVIRONMENT: "NODE" // or "SHELL" or "DENONODE"
-});
+    const Module = await initLib({
+      locateFile: (file) =>
+        `https://libra-wasm-cdn-production.devversioncv.workers.dev/${file}?${VERSION}`
+    });
 
-    // Write the uploaded DOCX file to the in-memory filesystem
     Module.FS.writeFile("/input.docx", docxBuffer);
 
-    // Call LibreOffice WASM to convert the DOCX to HTML
     Module.callMain([
       "--headless",
       "--convert-to",
@@ -43,7 +39,6 @@ Deno.serve(async (req) => {
       "/"
     ]);
 
-    // Read the resulting HTML output
     const htmlOutput = Module.FS.readFile("/input.html", { encoding: "utf8" });
 
     return new Response(htmlOutput, {
