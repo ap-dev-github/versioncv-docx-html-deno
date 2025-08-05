@@ -1,18 +1,31 @@
-// Import the LibreOffice WebAssembly runtime from your CDN
-import initLib from "https://libra-wasm-cdn-production.devversioncv.workers.dev/soffice.mjs";
+// main.ts - Deno Worker with LibreOffice WASM
+import { serve } from "https://deno.land/std@0.192.0/http/server.ts";
 
-const VERSION = `v=11`; 
-const CDN_BASE = `https://libra-wasm-cdn-production.devversioncv.workers.dev`;
+// Configuration
+const WASM_URL = "https://libra-wasm-cdn-production.devversioncv.workers.dev/soffice.mjs";
+const VERSION = "v=12";
 
-// patched Deno to simulate Worker environment expected by Emscripten
-(globalThis as any).self = globalThis;
-(globalThis as any).location = new URL("https://fake.url");
+// Initialize WASM once (cold start)
+const initWASM = async () => {
+  const { default: initLib, Module } = await import(WASM_URL);
+  
+  await initLib({
+    locateFile: (file: string) => `${WASM_URL.replace('soffice.mjs', file)}?${VERSION}`,
+    noInitialRun: true, // Critical for worker environment
+    thisProgram: "soffice", // Required for LibreOffice CLI
+    wasmMemory: new WebAssembly.Memory({ initial: 256 }),
+  });
 
-Deno.serve(async (req) => {
-  // Handle preflight for CORS
+  return Module;
+};
+
+// Cache initialized WASM
+let wasmModule: any;
+
+Deno.serve(async (req: Request) => {
+  // CORS Handling
   if (req.method === "OPTIONS") {
     return new Response(null, {
-      status: 204,
       headers: {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -22,50 +35,47 @@ Deno.serve(async (req) => {
   }
 
   if (req.method !== "POST") {
-    return new Response("Use POST with DOCX file", { status: 405 });
+    return new Response("Send DOCX via POST", { status: 405 });
   }
 
   try {
-    // Get uploaded DOCX file
-    const docxBuffer = new Uint8Array(await req.arrayBuffer());
+    // Initialize WASM (if not cached)
+    if (!wasmModule) {
+      wasmModule = await initWASM();
+      // Configure virtual filesystem
+      wasmModule.FS.mkdir("/working");
+      wasmModule.FS.mount(wasmModule.FS.filesystems.WORKERFS, {}, "/working");
+    }
 
-    // Load patched LibreOffice WASM runtime
-    const Module = await initLib({
-      locateFile: (file) => `${CDN_BASE}/${file}?${VERSION}`
-    });
+    // Process file
+    const docxData = new Uint8Array(await req.arrayBuffer());
+    wasmModule.FS.writeFile("/working/input.docx", docxData);
 
-    // Write the file into virtual FS
-    Module.FS.writeFile("/input.docx", docxBuffer);
-
-    // Run the conversion
-    Module.callMain([
+    // Execute conversion
+    wasmModule.callMain([
       "--headless",
-      "--convert-to",
-      "html:XHTML Writer",
-      "/input.docx",
-      "--outdir",
-      "/"
+      "--convert-to", "html",
+      "--outdir", "/working",
+      "/working/input.docx"
     ]);
 
-    // Read back output
-    const htmlOutput = Module.FS.readFile("/input.html", { encoding: "utf8" });
+    // Read result
+    const html = wasmModule.FS.readFile("/working/input.html", { encoding: "utf8" });
 
-    return new Response(htmlOutput, {
-      status: 200,
+    // Cleanup
+    wasmModule.FS.unlink("/working/input.docx");
+    wasmModule.FS.unlink("/working/input.html");
+
+    return new Response(html, {
       headers: {
         "Content-Type": "text/html",
         "Access-Control-Allow-Origin": "*"
       }
     });
   } catch (err) {
-    return new Response(
-      `Conversion error: ${(err as Error).message || "unknown error"}`,
-      {
-        status: 500,
-        headers: {
-          "Access-Control-Allow-Origin": "*"
-        }
-      }
-    );
+    return new Response(`Error: ${err.message}`, { 
+      status: 500,
+      headers: { "Access-Control-Allow-Origin": "*" }
+    });
   }
 });
