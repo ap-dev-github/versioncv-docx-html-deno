@@ -27,7 +27,7 @@ Deno.serve(async (req) => {
   const Module = await initLib({
   locateFile: (file) =>
     `https://libra-wasm-cdn-production.devversioncv.workers.dev/${file}`,
-  ENVIRONMENT: "SHELL" // or "SHELL" or "DENONODE"
+  ENVIRONMENT: "NODE" // or "SHELL" or "DENONODE"
 });
 
     // Write the uploaded DOCX file to the in-memory filesystem
