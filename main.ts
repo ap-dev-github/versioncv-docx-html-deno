@@ -15,7 +15,7 @@ async function initializeWASM() {
       locateFile: (path: string) => `${CDN_BASE}/${path}?${VERSION}`,
       noInitialRun: true,
       thisProgram: "soffice",
-      wasmMemory: new WebAssembly.Memory({ initial: 128, maximum: 256 }), // Adjusted for Deploy
+      wasmMemory: new WebAssembly.Memory({ initial: 128, maximum: 128 }), // Adjusted for Deploy
       printErr: (text: string) => console.error("[LibreOffice]", text),
     };
 
