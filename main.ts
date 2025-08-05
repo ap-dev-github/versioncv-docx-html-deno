@@ -1,7 +1,12 @@
 // Import the LibreOffice WebAssembly runtime from your CDN
 import initLib from "https://libra-wasm-cdn-production.devversioncv.workers.dev/soffice.mjs";
 
-const VERSION = `v=10`; // bump this to bust cache
+const VERSION = `v=11`; 
+const CDN_BASE = `https://libra-wasm-cdn-production.devversioncv.workers.dev`;
+
+// patched Deno to simulate Worker environment expected by Emscripten
+(globalThis as any).self = globalThis;
+(globalThis as any).location = new URL("https://fake.url");
 
 Deno.serve(async (req) => {
   // Handle preflight for CORS
@@ -21,15 +26,18 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // Get uploaded DOCX file
     const docxBuffer = new Uint8Array(await req.arrayBuffer());
 
+    // Load patched LibreOffice WASM runtime
     const Module = await initLib({
-      locateFile: (file) =>
-        `https://libra-wasm-cdn-production.devversioncv.workers.dev/${file}?${VERSION}`
+      locateFile: (file) => `${CDN_BASE}/${file}?${VERSION}`
     });
 
+    // Write the file into virtual FS
     Module.FS.writeFile("/input.docx", docxBuffer);
 
+    // Run the conversion
     Module.callMain([
       "--headless",
       "--convert-to",
@@ -39,6 +47,7 @@ Deno.serve(async (req) => {
       "/"
     ]);
 
+    // Read back output
     const htmlOutput = Module.FS.readFile("/input.html", { encoding: "utf8" });
 
     return new Response(htmlOutput, {
@@ -48,7 +57,6 @@ Deno.serve(async (req) => {
         "Access-Control-Allow-Origin": "*"
       }
     });
-
   } catch (err) {
     return new Response(
       `Conversion error: ${(err as Error).message || "unknown error"}`,
