@@ -1,34 +1,33 @@
-// main.ts for Deno Deploy
+// main.ts - Deno Deploy Compatible Version
 const CDN_BASE = "https://libra-wasm-cdn-production.devversioncv.workers.dev";
 const VERSION = "v=13";
 
-let wasmModule: any;
+// Initialize WASM once (cached for subsequent requests)
+let wasmInit: Promise<any> | null = null;
 
-async function initWASM() {
+async function initializeWASM() {
   try {
-    const { default: initLib } = await import(`${CDN_BASE}/soffice.mjs?${VERSION}`);
+    // Load Emscripten module
+    const { default: initLibreOffice } = await import(`${CDN_BASE}/soffice.mjs?${VERSION}`);
     
-    return await initLib({
+    // Configure WASM memory (critical for Deno Deploy's 128MB limit)
+    const wasmConfig = {
       locateFile: (path: string) => `${CDN_BASE}/${path}?${VERSION}`,
       noInitialRun: true,
       thisProgram: "soffice",
-      wasmMemory: new WebAssembly.Memory({ initial: 256 }),
-      instantiateWasm: async (imports, callback) => {
-        const wasmResponse = await fetch(`${CDN_BASE}/soffice.wasm?${VERSION}`);
-        const wasmBytes = await wasmResponse.arrayBuffer();
-        const instance = await WebAssembly.instantiate(wasmBytes, imports);
-        callback(instance);
-        return instance.exports;
-      }
-    });
+      wasmMemory: new WebAssembly.Memory({ initial: 128, maximum: 256 }), // Adjusted for Deploy
+      printErr: (text: string) => console.error("[LibreOffice]", text),
+    };
+
+    return await initLibreOffice(wasmConfig);
   } catch (error) {
     console.error("WASM Initialization Failed:", error);
     throw error;
   }
 }
 
-async function handler(req: Request): Promise<Response> {
-  // CORS Preflight
+export default async (req: Request): Promise<Response> => {
+  // CORS Handling
   if (req.method === "OPTIONS") {
     return new Response(null, {
       headers: {
@@ -40,43 +39,57 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (req.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405 });
+    return new Response("Only POST requests allowed", { status: 405 });
   }
 
   try {
-    if (!wasmModule) {
-      wasmModule = await initWASM();
-      wasmModule.FS.mkdir("/working");
+    // Initialize WASM (singleton pattern)
+    if (!wasmInit) {
+      wasmInit = initializeWASM();
+    }
+    const libreoffice = await wasmInit;
+
+    // Setup virtual filesystem
+    if (!libreoffice.FS.analyzePath("/working").exists) {
+      libreoffice.FS.mkdir("/working");
     }
 
-    const docxData = new Uint8Array(await req.arrayBuffer());
-    wasmModule.FS.writeFile("/working/input.docx", docxData);
+    // Process document
+    const docData = new Uint8Array(await req.arrayBuffer());
+    libreoffice.FS.writeFile("/working/input.docx", docData);
 
-    wasmModule.callMain([
-      "--headless",
-      "--convert-to", "html",
-      "--outdir", "/working",
-      "/working/input.docx"
+    // Convert to HTML (timeout after 10s)
+    await Promise.race([
+      new Promise((_, reject) => 
+        setTimeout(() => reject("Conversion timed out"), 10000)
+      ),
+      libreoffice.callMain([
+        "--headless",
+        "--convert-to", "html",
+        "--outdir", "/working",
+        "/working/input.docx"
+      ])
     ]);
 
-    const html = wasmModule.FS.readFile("/working/input.html", { encoding: "utf8" });
-    
-    wasmModule.FS.unlink("/working/input.docx");
-    wasmModule.FS.unlink("/working/input.html");
+    // Get result
+    const html = libreoffice.FS.readFile("/working/input.html", { encoding: "utf8" });
 
-    return new Response(html, { 
-      headers: { 
+    // Cleanup
+    libreoffice.FS.unlink("/working/input.docx");
+    libreoffice.FS.unlink("/working/input.html");
+
+    return new Response(html, {
+      headers: {
         "Content-Type": "text/html",
-        "Access-Control-Allow-Origin": "*" 
-      } 
+        "Access-Control-Allow-Origin": "*"
+      }
     });
+
   } catch (error) {
     console.error("Conversion Error:", error);
-    return new Response(`Conversion Failed: ${error.message}`, {
+    return new Response(`Error: ${error instanceof Error ? error.message : String(error)}`, {
       status: 500,
       headers: { "Access-Control-Allow-Origin": "*" }
     });
   }
-}
-
-export default handler;
+};
