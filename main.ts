@@ -24,10 +24,11 @@ Deno.serve(async (req) => {
     const docxBuffer = new Uint8Array(await req.arrayBuffer());
 
     // Load the LibreOffice WebAssembly runtime from your CDN
-    const Module = await initLib({
-      locateFile: (file) =>
-        `https://libra-wasm-cdn-production.devversioncv.workers.dev/${file}`,
-    });
+  const Module = await initLib({
+  locateFile: (file) =>
+    `https://libra-wasm-cdn-production.devversioncv.workers.dev/${file}`,
+  ENVIRONMENT: "WEB" // or "SHELL" or "DENONODE"
+});
 
     // Write the uploaded DOCX file to the in-memory filesystem
     Module.FS.writeFile("/input.docx", docxBuffer);
