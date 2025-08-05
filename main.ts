@@ -1,7 +1,7 @@
 // Import the LibreOffice WebAssembly runtime from your CDN
 import initLib from "https://libra-wasm-cdn-production.devversioncv.workers.dev/soffice.mjs";
 
-const VERSION = `v=2`; // bump this to bust cache
+const VERSION = `v=6`; // bump this to bust cache
 
 Deno.serve(async (req) => {
   // Handle preflight for CORS
